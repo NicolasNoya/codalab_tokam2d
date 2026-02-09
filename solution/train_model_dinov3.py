@@ -249,6 +249,44 @@ class DINOv3Segmentation(nn.Module):
         return results
 
 
+def split_dataset(dataset):
+    """
+    Split dataset into train and validation sets.
+    Samples without bounding boxes go to validation set.
+    Samples with bounding boxes are split 80/20 for train/val.
+
+    Returns:
+        train_indices, val_indices
+    """
+    labeled_indices = []
+    unlabeled_indices = []
+
+    for idx in range(len(dataset)):
+        _, target = dataset[idx]
+        if (
+            target is not None
+            and "boxes" in target
+            and target["boxes"] is not None
+            and len(target["boxes"]) > 0
+        ):
+            labeled_indices.append(idx)
+        else:
+            unlabeled_indices.append(idx)
+
+    # Split labeled data 80/20
+    import random
+
+    random.shuffle(labeled_indices)
+    split_point = int(0.8 * len(labeled_indices))
+    train_indices = labeled_indices[:split_point]
+    val_labeled_indices = labeled_indices[split_point:]
+
+    # All unlabeled go to validation
+    val_indices = val_labeled_indices + unlabeled_indices
+
+    return train_indices, val_indices
+
+
 def train_model(
     training_dir, model_name="facebook/dinov3-vits16-pretrain-lvd1689m"
 ):
@@ -262,9 +300,26 @@ def train_model(
     Returns:
         Trained DINOv3Segmentation model
     """
-    train_dataset = TokamDataset(training_dir, include_unlabeled=False)
+    # Load full dataset
+    full_dataset = TokamDataset(training_dir, include_unlabeled=True)
+
+    # Split into train and validation
+    train_indices, val_indices = split_dataset(full_dataset)
+
+    print(f"Dataset split:")
+    print(f"  Total samples: {len(full_dataset)}")
+    print(f"  Training samples: {len(train_indices)}")
+    print(f"  Validation samples: {len(val_indices)}")
+
+    # Create train and validation subsets
+    train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset, batch_size=2, collate_fn=collate_fn, shuffle=True
+    )
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=2, collate_fn=collate_fn, shuffle=False
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -326,5 +381,155 @@ def train_model(
         avg_loss = epoch_loss / len(train_dataloader)
         print(f"Epoch {epoch+1} completed. Average loss: {avg_loss:.4f}")
 
+    # Return model and validation dataloader for evaluation
     model.eval().to("cpu")
-    return model
+    return model, val_dataloader, full_dataset
+
+
+def visualize_validation_results(
+    model, val_dataloader, dataset, device="cpu", num_samples=6
+):
+    """
+    Visualize model predictions on validation set.
+
+    Args:
+        model: Trained model
+        val_dataloader: Validation dataloader
+        dataset: Original dataset to access images
+        device: Device to run inference on
+        num_samples: Number of samples to visualize
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    model.to(device)
+    model.eval()
+
+    # Collect samples
+    samples_collected = 0
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.flatten()
+
+    with torch.no_grad():
+        for images, targets in val_dataloader:
+            for i in range(len(images)):
+                if samples_collected >= num_samples:
+                    break
+
+                # Get image
+                img = images[i]
+                target = targets[i]
+
+                # Prepare for inference
+                if img.dim() == 2:
+                    img_input = img.unsqueeze(0)
+                elif img.dim() == 3 and img.shape[0] == 1:
+                    img_input = img
+                else:
+                    img_input = img
+
+                # Convert to 3 channels if needed
+                if img_input.shape[0] == 1:
+                    img_input = img_input.repeat(3, 1, 1)
+
+                # Get predictions
+                predictions = model([img_input.to(device)])
+                pred = predictions[0]
+
+                # Visualize
+                ax = axes[samples_collected]
+
+                # Show image
+                img_viz = img.squeeze().cpu().numpy()
+                ax.imshow(img_viz, cmap="viridis")
+
+                # Draw ground truth boxes (if any)
+                has_gt = False
+                if (
+                    target is not None
+                    and "boxes" in target
+                    and target["boxes"] is not None
+                    and len(target["boxes"]) > 0
+                ):
+                    has_gt = True
+                    for box in target["boxes"]:
+                        x, y, w, h = box.cpu().numpy()
+                        rect = patches.Rectangle(
+                            (x, y),
+                            w,
+                            h,
+                            linewidth=2,
+                            edgecolor="lime",
+                            facecolor="none",
+                            label="Ground Truth",
+                        )
+                        ax.add_patch(rect)
+
+                # Draw predictions
+                if len(pred["boxes"]) > 0:
+                    for box, score in zip(pred["boxes"], pred["scores"]):
+                        # Convert normalized to pixel coordinates
+                        x, y, w, h = box.cpu().numpy()
+                        x_pix, y_pix, w_pix, h_pix = (
+                            x * 512,
+                            y * 512,
+                            w * 512,
+                            h * 512,
+                        )
+
+                        rect = patches.Rectangle(
+                            (x_pix, y_pix),
+                            w_pix,
+                            h_pix,
+                            linewidth=2,
+                            edgecolor="red",
+                            facecolor="none",
+                            linestyle="--",
+                            label="Prediction",
+                        )
+                        ax.add_patch(rect)
+
+                        # Add score
+                        ax.text(
+                            x_pix,
+                            y_pix - 5,
+                            f"{score.item():.2f}",
+                            color="red",
+                            fontsize=9,
+                            bbox=dict(
+                                boxstyle="round", facecolor="white", alpha=0.7
+                            ),
+                        )
+
+                # Title
+                title = f"{'Labeled' if has_gt else 'Unlabeled'} - {len(pred['boxes'])} detections"
+                ax.set_title(title, fontsize=10, fontweight="bold")
+                ax.axis("off")
+
+                samples_collected += 1
+
+            if samples_collected >= num_samples:
+                break
+
+    # Add legend
+    from matplotlib.lines import Line2D
+
+    legend_elements = [
+        Line2D([0], [0], color="lime", lw=2, label="Ground Truth"),
+        Line2D([0], [0], color="red", lw=2, linestyle="--", label="Prediction"),
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc="upper center",
+        ncol=2,
+        fontsize=12,
+        bbox_to_anchor=(0.5, 0.98),
+    )
+
+    plt.suptitle(
+        "Validation Set Results", fontsize=16, fontweight="bold", y=0.95
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+    print(f"\n✓ Visualized {samples_collected} validation samples")
