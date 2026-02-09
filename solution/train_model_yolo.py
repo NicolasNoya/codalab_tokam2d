@@ -6,6 +6,11 @@ import shutil
 from ultralytics import YOLO
 import numpy as np
 
+# Set matplotlib backend to non-GUI to avoid libxcb errors
+import matplotlib
+
+matplotlib.use("Agg")
+
 # Add ingestion_program to path to import tokam2d_utils
 sys.path.insert(0, str(Path(__file__).parent.parent / "ingestion_program"))
 from tokam2d_utils import TokamDataset
