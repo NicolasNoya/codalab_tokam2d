@@ -370,7 +370,7 @@ class DINOv3Segmentation(nn.Module):
                     target_labels[:num_targets],
                 )
 
-                # Bounding box loss (GIoU loss)
+                # Bounding box loss (L1 loss)
                 target_boxes = targets[i].get("boxes", None)
                 if target_boxes is not None:
                     # Normalize ground truth boxes to [0, 1] range
@@ -383,8 +383,7 @@ class DINOv3Segmentation(nn.Module):
                         :, [1, 3]
                     ] /= 512.0  # Normalize y, h
 
-                    # Use GIoU loss instead of L1
-                    bbox_loss += generalized_box_iou_loss(
+                    bbox_loss += F.l1_loss(
                         pred_boxes[i, :num_targets], normalized_target_boxes
                     )
 
@@ -717,3 +716,263 @@ def visualize_validation_results(
     plt.show()
 
     print(f"\n✓ Visualized {samples_collected} validation samples")
+
+
+def compute_validation_iou(model, val_dataloader, device="cpu"):
+    """
+    Compute IoU metrics on validation set.
+
+    Args:
+        model: Trained model
+        val_dataloader: Validation dataloader
+        device: Device to run inference on
+
+    Returns:
+        dict with IoU statistics
+    """
+    model.to(device)
+    model.eval()
+
+    all_ious = []
+    num_labeled = 0
+    num_unlabeled = 0
+    num_true_positives = 0
+    num_false_positives = 0
+    num_false_negatives = 0
+
+    with torch.no_grad():
+        for images, targets in val_dataloader:
+            for i in range(len(images)):
+                # Get image and target
+                img = images[i]
+                target = targets[i]
+
+                # Prepare for inference
+                if img.dim() == 2:
+                    img_input = img.unsqueeze(0)
+                elif img.dim() == 3 and img.shape[0] == 1:
+                    img_input = img
+                else:
+                    img_input = img
+
+                # Convert to 3 channels if needed
+                if img_input.shape[0] == 1:
+                    img_input = img_input.repeat(3, 1, 1)
+
+                # Get predictions
+                predictions = model([img_input.to(device)])
+                pred = predictions[0]
+
+                # Check if sample has ground truth
+                has_gt = (
+                    target is not None
+                    and "boxes" in target
+                    and target["boxes"] is not None
+                    and len(target["boxes"]) > 0
+                )
+
+                if has_gt:
+                    num_labeled += 1
+                    gt_boxes = target[
+                        "boxes"
+                    ].cpu()  # (N, 4) in pixel coordinates
+                    pred_boxes = pred[
+                        "boxes"
+                    ].cpu()  # (M, 4) in normalized coordinates
+
+                    if len(pred_boxes) > 0:
+                        # Denormalize predictions to pixel coordinates
+                        pred_boxes_pixel = pred_boxes.clone()
+                        pred_boxes_pixel[:, [0, 2]] *= 512
+                        pred_boxes_pixel[:, [1, 3]] *= 512
+
+                        # Compute IoU between all predictions and ground truths
+                        ious = box_iou(pred_boxes_pixel, gt_boxes)  # (M, N)
+
+                        # For each ground truth, find best matching prediction
+                        if ious.numel() > 0:
+                            max_ious, max_indices = ious.max(
+                                dim=0
+                            )  # Best prediction for each GT
+
+                            # Count matches (IoU > 0.5 threshold)
+                            matches = (max_ious > 0.5).sum().item()
+                            num_true_positives += matches
+                            num_false_negatives += len(gt_boxes) - matches
+                            num_false_positives += max(
+                                0, len(pred_boxes) - matches
+                            )
+
+                            # Record IoUs for matched boxes
+                            all_ious.extend(max_ious[max_ious > 0].tolist())
+                        else:
+                            num_false_negatives += len(gt_boxes)
+                    else:
+                        # No predictions but has ground truth
+                        num_false_negatives += len(gt_boxes)
+                else:
+                    num_unlabeled += 1
+                    # For unlabeled data, just count predictions as potential false positives
+                    if len(pred["boxes"]) > 0:
+                        num_false_positives += len(pred["boxes"])
+
+    # Compute metrics
+    mean_iou = sum(all_ious) / len(all_ious) if all_ious else 0.0
+    precision = (
+        num_true_positives / (num_true_positives + num_false_positives)
+        if (num_true_positives + num_false_positives) > 0
+        else 0.0
+    )
+    recall = (
+        num_true_positives / (num_true_positives + num_false_negatives)
+        if (num_true_positives + num_false_negatives) > 0
+        else 0.0
+    )
+    f1_score = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+
+    return {
+        "mean_iou": mean_iou,
+        "num_samples_with_iou": len(all_ious),
+        "num_labeled": num_labeled,
+        "num_unlabeled": num_unlabeled,
+        "true_positives": num_true_positives,
+        "false_positives": num_false_positives,
+        "false_negatives": num_false_negatives,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+    }
+
+
+def compute_validation_iou(model, val_dataloader, device="cpu"):
+    """
+    Compute IoU metrics on validation set.
+
+    Args:
+        model: Trained model
+        val_dataloader: Validation dataloader
+        device: Device to run inference on
+
+    Returns:
+        dict with IoU statistics
+    """
+    model.to(device)
+    model.eval()
+
+    all_ious = []
+    num_labeled = 0
+    num_unlabeled = 0
+    num_true_positives = 0
+    num_false_positives = 0
+    num_false_negatives = 0
+
+    with torch.no_grad():
+        for images, targets in val_dataloader:
+            for i in range(len(images)):
+                # Get image and target
+                img = images[i]
+                target = targets[i]
+
+                # Prepare for inference
+                if img.dim() == 2:
+                    img_input = img.unsqueeze(0)
+                elif img.dim() == 3 and img.shape[0] == 1:
+                    img_input = img
+                else:
+                    img_input = img
+
+                # Convert to 3 channels if needed
+                if img_input.shape[0] == 1:
+                    img_input = img_input.repeat(3, 1, 1)
+
+                # Get predictions
+                predictions = model([img_input.to(device)])
+                pred = predictions[0]
+
+                # Check if sample has ground truth
+                has_gt = (
+                    target is not None
+                    and "boxes" in target
+                    and target["boxes"] is not None
+                    and len(target["boxes"]) > 0
+                )
+
+                if has_gt:
+                    num_labeled += 1
+                    gt_boxes = target[
+                        "boxes"
+                    ].cpu()  # (N, 4) in pixel coordinates
+                    pred_boxes = pred[
+                        "boxes"
+                    ].cpu()  # (M, 4) in normalized coordinates
+
+                    if len(pred_boxes) > 0:
+                        # Denormalize predictions to pixel coordinates
+                        pred_boxes_pixel = pred_boxes.clone()
+                        pred_boxes_pixel[:, [0, 2]] *= 512
+                        pred_boxes_pixel[:, [1, 3]] *= 512
+
+                        # Compute IoU between all predictions and ground truths
+                        ious = box_iou(pred_boxes_pixel, gt_boxes)  # (M, N)
+
+                        # For each ground truth, find best matching prediction
+                        if ious.numel() > 0:
+                            max_ious, max_indices = ious.max(
+                                dim=0
+                            )  # Best prediction for each GT
+
+                            # Count matches (IoU > 0.5 threshold)
+                            matches = (max_ious > 0.5).sum().item()
+                            num_true_positives += matches
+                            num_false_negatives += len(gt_boxes) - matches
+                            num_false_positives += max(
+                                0, len(pred_boxes) - matches
+                            )
+
+                            # Record IoUs for matched boxes
+                            all_ious.extend(max_ious[max_ious > 0].tolist())
+                        else:
+                            num_false_negatives += len(gt_boxes)
+                    else:
+                        # No predictions but has ground truth
+                        num_false_negatives += len(gt_boxes)
+                else:
+                    num_unlabeled += 1
+                    # For unlabeled data, just count predictions as potential false positives
+                    if len(pred["boxes"]) > 0:
+                        num_false_positives += len(pred["boxes"])
+
+    # Compute metrics
+    mean_iou = sum(all_ious) / len(all_ious) if all_ious else 0.0
+    precision = (
+        num_true_positives / (num_true_positives + num_false_positives)
+        if (num_true_positives + num_false_positives) > 0
+        else 0.0
+    )
+    recall = (
+        num_true_positives / (num_true_positives + num_false_negatives)
+        if (num_true_positives + num_false_negatives) > 0
+        else 0.0
+    )
+    f1_score = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+
+    return {
+        "mean_iou": mean_iou,
+        "num_samples_with_iou": len(all_ious),
+        "num_labeled": num_labeled,
+        "num_unlabeled": num_unlabeled,
+        "true_positives": num_true_positives,
+        "false_positives": num_false_positives,
+        "false_negatives": num_false_negatives,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1_score,
+    }
