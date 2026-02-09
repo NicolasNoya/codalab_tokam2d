@@ -5,3 +5,4 @@
 *.zip
 ingestion_res/*
 scoring_res/*
+.venv
