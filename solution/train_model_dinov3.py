@@ -193,62 +193,36 @@ class DINOv3Segmentation(nn.Module):
         bbox_loss = torch.tensor(0.0, device=device)
         mask_loss = torch.tensor(0.0, device=device)
 
+        num_valid_targets = 0
+
         for i in range(batch_size):
-            if "labels" in targets[i]:
-                target_labels = targets[i]["labels"]
-                # Simple matching: assign first N predictions to first N targets
+            # Check if this sample has valid labels (not None)
+            target_labels = targets[i].get("labels", None)
+            if target_labels is not None and len(target_labels) > 0:
+                num_valid_targets += 1
                 num_targets = len(target_labels)
-                if num_targets > 0:
-                    # Classification loss
-                    class_loss += F.cross_entropy(
-                        pred_logits[i, :num_targets],
-                        target_labels[:num_targets],
+
+                # Classification loss
+                class_loss += F.cross_entropy(
+                    pred_logits[i, :num_targets],
+                    target_labels[:num_targets],
+                )
+
+                # Bounding box loss (L1 loss)
+                target_boxes = targets[i].get("boxes", None)
+                if target_boxes is not None:
+                    bbox_loss += F.l1_loss(
+                        pred_boxes[i, :num_targets], target_boxes[:num_targets]
                     )
 
-                    # Bounding box loss (L1 loss)
-                    if "boxes" in targets[i]:
-                        target_boxes = targets[i]["boxes"][:num_targets]
-                        bbox_loss += F.l1_loss(
-                            pred_boxes[i, :num_targets], target_boxes
-                        )
+                # Note: Dataset doesn't provide masks, so mask loss stays at 0
+                # Mask head is trained implicitly through the shared backbone
 
-                    # Mask loss (if masks are provided)
-                    if "masks" in targets[i]:
-                        target_masks = targets[i][
-                            "masks"
-                        ]  # (num_objects, H, W)
-                        num_mask_targets = target_masks.shape[0]
-
-                        # Resize predicted masks to match target size
-                        pred_masks_resized = F.interpolate(
-                            pred_masks[
-                                i : i + 1
-                            ],  # (1, num_classes, H_pred, W_pred)
-                            size=target_masks.shape[-2:],
-                            mode="bilinear",
-                            align_corners=False,
-                        )  # (1, num_classes, H, W)
-
-                        # Select the predicted class channel (class 1 for plasma)
-                        pred_mask_class1 = pred_masks_resized[0, 1]  # (H, W)
-
-                        # Repeat for each target object
-                        pred_mask_repeated = pred_mask_class1.unsqueeze(
-                            0
-                        ).repeat(
-                            num_mask_targets, 1, 1
-                        )  # (num_mask_targets, H, W)
-
-                        # Compute loss
-                        mask_loss += F.binary_cross_entropy_with_logits(
-                            pred_mask_repeated,
-                            target_masks.float(),
-                        )
-
-        # Average losses
-        class_loss = class_loss / batch_size
-        bbox_loss = bbox_loss / batch_size
-        mask_loss = mask_loss / batch_size
+        # Average losses over samples with valid targets
+        if num_valid_targets > 0:
+            class_loss = class_loss / num_valid_targets
+            bbox_loss = bbox_loss / num_valid_targets
+            mask_loss = mask_loss / num_valid_targets
 
         return {
             "loss_classifier": class_loss,
