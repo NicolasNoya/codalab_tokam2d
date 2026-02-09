@@ -64,17 +64,6 @@ class DINOv3Segmentation(nn.Module):
             nn.Linear(256, num_classes),
         )
 
-        # Segmentation mask head
-        self.mask_head = nn.Sequential(
-            nn.Conv2d(self.hidden_dim, 512, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(512, 256, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(256, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, num_classes, 1),
-        )
-
         # Object query embeddings for detection (similar to DETR approach)
         self.num_queries = 10  # Maximum number of plasma instances to detect
         self.query_embed = nn.Embedding(self.num_queries, self.hidden_dim)
@@ -166,24 +155,15 @@ class DINOv3Segmentation(nn.Module):
             queries
         )  # (batch_size, num_queries, num_classes)
 
-        # Generate segmentation masks
-        pred_masks = self.mask_head(
-            spatial_features
-        )  # (batch_size, num_classes, H, W)
-
         if self.training and targets is not None:
             # Compute losses during training
-            losses = self.compute_losses(
-                pred_boxes, pred_logits, pred_masks, targets
-            )
+            losses = self.compute_losses(pred_boxes, pred_logits, targets)
             return losses
         else:
             # Return predictions during inference
-            return self.postprocess_predictions(
-                pred_boxes, pred_logits, pred_masks
-            )
+            return self.postprocess_predictions(pred_boxes, pred_logits)
 
-    def compute_losses(self, pred_boxes, pred_logits, pred_masks, targets):
+    def compute_losses(self, pred_boxes, pred_logits, targets):
         """Compute training losses"""
         batch_size = pred_boxes.shape[0]
         device = pred_boxes.device
@@ -191,7 +171,6 @@ class DINOv3Segmentation(nn.Module):
         # Initialize losses as tensors on the correct device
         class_loss = torch.tensor(0.0, device=device)
         bbox_loss = torch.tensor(0.0, device=device)
-        mask_loss = torch.tensor(0.0, device=device)
 
         num_valid_targets = 0
 
@@ -225,22 +204,17 @@ class DINOv3Segmentation(nn.Module):
                         pred_boxes[i, :num_targets], normalized_target_boxes
                     )
 
-                # Note: Dataset doesn't provide masks, so mask loss stays at 0
-                # Mask head is trained implicitly through the shared backbone
-
         # Average losses over samples with valid targets
         if num_valid_targets > 0:
             class_loss = class_loss / num_valid_targets
             bbox_loss = bbox_loss / num_valid_targets
-            mask_loss = mask_loss / num_valid_targets
 
         return {
             "loss_classifier": class_loss,
             "loss_box_reg": bbox_loss,
-            "loss_mask": mask_loss,
         }
 
-    def postprocess_predictions(self, pred_boxes, pred_logits, pred_masks):
+    def postprocess_predictions(self, pred_boxes, pred_logits):
         """Convert raw predictions to final format"""
         batch_size = pred_boxes.shape[0]
         results = []
@@ -252,10 +226,9 @@ class DINOv3Segmentation(nn.Module):
             ]  # (num_queries, 4) in normalized coordinates [0, 1]
             logits = pred_logits[i]  # (num_queries, num_classes)
 
-            # Denormalize boxes to pixel coordinates (512x512 original image size)
-            denormalized_boxes = boxes.clone()
-            denormalized_boxes[:, [0, 2]] *= 512.0  # Denormalize x, w
-            denormalized_boxes[:, [1, 3]] *= 512.0  # Denormalize y, h
+            # Keep boxes in normalized [0, 1] range
+            # Multiply by 512 to convert to pixel coordinates if needed
+            normalized_boxes = boxes.clone()
 
             # Convert logits to scores and labels
             scores = F.softmax(logits, dim=-1)
@@ -265,20 +238,11 @@ class DINOv3Segmentation(nn.Module):
             # Filter out low confidence predictions (background class = 0)
             keep = (labels > 0) & (scores > 0.5)
 
-            # Prepare masks (take the predicted class channel)
-            masks = F.interpolate(
-                pred_masks[i : i + 1],
-                size=(224, 224),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)
-
             results.append(
                 {
-                    "boxes": denormalized_boxes[keep],
+                    "boxes": normalized_boxes[keep],
                     "labels": labels[keep],
                     "scores": scores[keep],
-                    "masks": masks,
                 }
             )
 
