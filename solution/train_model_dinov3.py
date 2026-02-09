@@ -96,19 +96,33 @@ class DINOv3Segmentation(nn.Module):
         """
         batch_size = len(images)
 
-        # Prepare batch - ensure all images are same size
-        # DINOv2 expects 224x224 or multiples of 14
+        # Prepare batch - ensure all images are same size and have 3 channels
+        # DINOv3 expects 3-channel RGB images (224x224)
+        processed_images = []
+        for img in images:
+            # Ensure image has batch dimension
+            if img.dim() == 2:  # (H, W)
+                img = img.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+            elif img.dim() == 3:  # (C, H, W)
+                img = img.unsqueeze(0)  # (1, C, H, W)
+
+            # Resize to 224x224
+            img = F.interpolate(
+                img,
+                size=(224, 224),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            # Convert single channel to 3 channels (grayscale to RGB)
+            if img.shape[1] == 1:
+                img = img.repeat(1, 3, 1, 1)  # (1, 3, 224, 224)
+
+            processed_images.append(img.squeeze(0))  # (3, 224, 224)
+
         images_stacked = torch.stack(
-            [
-                F.interpolate(
-                    img.unsqueeze(0) if img.dim() == 3 else img,
-                    size=(224, 224),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0)
-                for img in images
-            ]
-        )
+            processed_images
+        )  # (batch_size, 3, 224, 224)
 
         # Get DINOv3 features
         # Output shape: (batch_size, num_tokens, hidden_dim)
