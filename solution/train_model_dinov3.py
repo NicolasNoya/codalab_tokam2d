@@ -213,16 +213,34 @@ class DINOv3Segmentation(nn.Module):
 
                     # Mask loss (if masks are provided)
                     if "masks" in targets[i]:
-                        target_masks = targets[i]["masks"]
+                        target_masks = targets[i][
+                            "masks"
+                        ]  # (num_objects, H, W)
                         # Resize predicted masks to match target size
                         pred_masks_resized = F.interpolate(
-                            pred_masks[i : i + 1],
+                            pred_masks[
+                                i : i + 1
+                            ],  # (1, num_classes, H_pred, W_pred)
                             size=target_masks.shape[-2:],
                             mode="bilinear",
                             align_corners=False,
-                        )
+                        )  # (1, num_classes, H, W)
+
+                        # Select the predicted class channel (class 1 for plasma)
+                        # and match it against all target masks for this image
+                        pred_mask_class1 = pred_masks_resized[
+                            0, 1:2
+                        ]  # (1, H, W)
+
+                        # Expand to match number of target objects
+                        pred_mask_expanded = pred_mask_class1.expand(
+                            num_targets, -1, -1
+                        )  # (num_targets, H, W)
+
+                        # Compute loss only for the actual number of targets
                         mask_loss += F.binary_cross_entropy_with_logits(
-                            pred_masks_resized.squeeze(0), target_masks.float()
+                            pred_mask_expanded[:num_targets],
+                            target_masks[:num_targets].float(),
                         )
 
         # Average losses
