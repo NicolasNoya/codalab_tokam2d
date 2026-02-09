@@ -186,11 +186,12 @@ class DINOv3Segmentation(nn.Module):
     def compute_losses(self, pred_boxes, pred_logits, pred_masks, targets):
         """Compute training losses"""
         batch_size = pred_boxes.shape[0]
+        device = pred_boxes.device
 
-        # Classification loss
-        class_loss = 0
-        bbox_loss = 0
-        mask_loss = 0
+        # Initialize losses as tensors on the correct device
+        class_loss = torch.tensor(0.0, device=device)
+        bbox_loss = torch.tensor(0.0, device=device)
+        mask_loss = torch.tensor(0.0, device=device)
 
         for i in range(batch_size):
             if "labels" in targets[i]:
@@ -216,6 +217,8 @@ class DINOv3Segmentation(nn.Module):
                         target_masks = targets[i][
                             "masks"
                         ]  # (num_objects, H, W)
+                        num_mask_targets = target_masks.shape[0]
+
                         # Resize predicted masks to match target size
                         pred_masks_resized = F.interpolate(
                             pred_masks[
@@ -227,20 +230,19 @@ class DINOv3Segmentation(nn.Module):
                         )  # (1, num_classes, H, W)
 
                         # Select the predicted class channel (class 1 for plasma)
-                        # and match it against all target masks for this image
-                        pred_mask_class1 = pred_masks_resized[
-                            0, 1:2
-                        ]  # (1, H, W)
+                        pred_mask_class1 = pred_masks_resized[0, 1]  # (H, W)
 
-                        # Expand to match number of target objects
-                        pred_mask_expanded = pred_mask_class1.expand(
-                            num_targets, -1, -1
-                        )  # (num_targets, H, W)
+                        # Repeat for each target object
+                        pred_mask_repeated = pred_mask_class1.unsqueeze(
+                            0
+                        ).repeat(
+                            num_mask_targets, 1, 1
+                        )  # (num_mask_targets, H, W)
 
-                        # Compute loss only for the actual number of targets
+                        # Compute loss
                         mask_loss += F.binary_cross_entropy_with_logits(
-                            pred_mask_expanded[:num_targets],
-                            target_masks[:num_targets].float(),
+                            pred_mask_repeated,
+                            target_masks.float(),
                         )
 
         # Average losses
