@@ -200,7 +200,7 @@ class DINOv3Segmentation(nn.Module):
             target_labels = targets[i].get("labels", None)
             if target_labels is not None and len(target_labels) > 0:
                 num_valid_targets += 1
-                num_targets = len(target_labels)
+                num_targets = min(len(target_labels), self.num_queries)
 
                 # Classification loss
                 class_loss += F.cross_entropy(
