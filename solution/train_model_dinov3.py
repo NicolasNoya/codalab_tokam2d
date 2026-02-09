@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoConfig
+import random
+import math
 
 # Add ingestion_program to path to import tokam2d_utils
 sys.path.insert(0, str(Path(__file__).parent.parent / "ingestion_program"))
@@ -12,6 +14,175 @@ from tokam2d_utils import TokamDataset
 
 def collate_fn(batch: torch.Tensor) -> torch.Tensor:
     return tuple(zip(*batch))
+
+
+def augment_image_and_boxes(image, boxes, p=0.5):
+    """
+    Apply random augmentations to image and bounding boxes.
+
+    Args:
+        image: (C, H, W) tensor
+        boxes: (N, 4) tensor in (x, y, w, h) format, pixel coordinates
+        p: probability of applying augmentation
+
+    Returns:
+        augmented_image, augmented_boxes
+    """
+    if boxes is None or len(boxes) == 0:
+        return image, boxes
+
+    device = image.device
+    dtype = image.dtype
+    C, H, W = image.shape
+
+    # Random horizontal flip
+    if random.random() < p:
+        image = torch.flip(image, dims=[2])  # Flip width
+        boxes = boxes.clone()
+        boxes[:, 0] = W - (boxes[:, 0] + boxes[:, 2])  # x = W - (x + w)
+
+    # Random vertical flip
+    if random.random() < p:
+        image = torch.flip(image, dims=[1])  # Flip height
+        boxes = boxes.clone()
+        boxes[:, 1] = H - (boxes[:, 1] + boxes[:, 3])  # y = H - (y + h)
+
+    # Random rotation (90, 180, 270 degrees)
+    if random.random() < p:
+        k = random.choice([1, 2, 3])  # 90, 180, or 270 degrees
+        image = torch.rot90(image, k=k, dims=[1, 2])
+
+        # Rotate boxes
+        boxes = boxes.clone()
+        for _ in range(k):
+            # Rotate 90 degrees clockwise
+            x, y, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+            # After 90° rotation: (x, y) -> (H - y - h, x)
+            new_x = H - y - h
+            new_y = x
+            new_w = h
+            new_h = w
+            boxes = torch.stack([new_x, new_y, new_w, new_h], dim=1)
+            H, W = W, H  # Swap dimensions
+
+    # Random translation (small shifts)
+    if random.random() < p:
+        max_shift = min(H, W) * 0.1  # Max 10% shift
+        shift_x = random.uniform(-max_shift, max_shift)
+        shift_y = random.uniform(-max_shift, max_shift)
+
+        # Shift image (pad and crop)
+        pad_x = int(abs(shift_x))
+        pad_y = int(abs(shift_y))
+        padded = F.pad(
+            image.unsqueeze(0), (pad_x, pad_x, pad_y, pad_y), mode="reflect"
+        ).squeeze(0)
+
+        # Crop to original size
+        start_x = pad_x + int(shift_x)
+        start_y = pad_y + int(shift_y)
+        image = padded[:, start_y : start_y + H, start_x : start_x + W]
+
+        # Shift boxes
+        boxes = boxes.clone()
+        boxes[:, 0] += shift_x
+        boxes[:, 1] += shift_y
+
+        # Clip boxes to image boundaries
+        boxes[:, 0] = torch.clamp(boxes[:, 0], 0, W - 1)
+        boxes[:, 1] = torch.clamp(boxes[:, 1], 0, H - 1)
+        boxes[:, 2] = torch.clamp(boxes[:, 2], 1, W - boxes[:, 0])
+        boxes[:, 3] = torch.clamp(boxes[:, 3], 1, H - boxes[:, 1])
+
+    # Random brightness adjustment
+    if random.random() < p:
+        brightness_factor = random.uniform(0.8, 1.2)
+        image = torch.clamp(image * brightness_factor, 0, 1)
+
+    return image, boxes
+
+
+def box_iou(boxes1, boxes2):
+    """
+    Compute IoU between two sets of boxes.
+    Boxes are in (x, y, w, h) format.
+
+    Args:
+        boxes1: (N, 4)
+        boxes2: (M, 4)
+
+    Returns:
+        iou: (N, M)
+    """
+    # Convert to (x1, y1, x2, y2)
+    boxes1_xyxy = torch.cat(
+        [boxes1[:, :2], boxes1[:, :2] + boxes1[:, 2:]], dim=1
+    )
+    boxes2_xyxy = torch.cat(
+        [boxes2[:, :2], boxes2[:, :2] + boxes2[:, 2:]], dim=1
+    )
+
+    # Compute intersection
+    lt = torch.max(boxes1_xyxy[:, None, :2], boxes2_xyxy[:, :2])  # (N, M, 2)
+    rb = torch.min(boxes1_xyxy[:, None, 2:], boxes2_xyxy[:, 2:])  # (N, M, 2)
+
+    wh = (rb - lt).clamp(min=0)  # (N, M, 2)
+    inter = wh[:, :, 0] * wh[:, :, 1]  # (N, M)
+
+    # Compute union
+    area1 = boxes1[:, 2] * boxes1[:, 3]  # (N,)
+    area2 = boxes2[:, 2] * boxes2[:, 3]  # (M,)
+    union = area1[:, None] + area2 - inter
+
+    iou = inter / (union + 1e-6)
+    return iou
+
+
+def generalized_box_iou_loss(pred_boxes, target_boxes):
+    """
+    Compute Generalized IoU loss.
+    GIoU = IoU - |C \ (A ∪ B)| / |C|
+    where C is the smallest enclosing box.
+
+    Args:
+        pred_boxes: (N, 4) in (x, y, w, h) format, normalized [0, 1]
+        target_boxes: (N, 4) in (x, y, w, h) format, normalized [0, 1]
+
+    Returns:
+        loss: scalar
+    """
+    # Convert to (x1, y1, x2, y2)
+    pred_xyxy = torch.cat(
+        [pred_boxes[:, :2], pred_boxes[:, :2] + pred_boxes[:, 2:]], dim=1
+    )
+    target_xyxy = torch.cat(
+        [target_boxes[:, :2], target_boxes[:, :2] + target_boxes[:, 2:]], dim=1
+    )
+
+    # Compute IoU
+    lt = torch.max(pred_xyxy[:, :2], target_xyxy[:, :2])
+    rb = torch.min(pred_xyxy[:, 2:], target_xyxy[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+
+    area_pred = pred_boxes[:, 2] * pred_boxes[:, 3]
+    area_target = target_boxes[:, 2] * target_boxes[:, 3]
+    union = area_pred + area_target - inter
+
+    iou = inter / (union + 1e-6)
+
+    # Compute enclosing box
+    enclose_lt = torch.min(pred_xyxy[:, :2], target_xyxy[:, :2])
+    enclose_rb = torch.max(pred_xyxy[:, 2:], target_xyxy[:, 2:])
+    enclose_wh = (enclose_rb - enclose_lt).clamp(min=0)
+    enclose_area = enclose_wh[:, 0] * enclose_wh[:, 1]
+
+    # GIoU
+    giou = iou - (enclose_area - union) / (enclose_area + 1e-6)
+
+    # GIoU loss (1 - GIoU)
+    loss = 1 - giou
+    return loss.mean()
 
 
 class DINOv3Segmentation(nn.Module):
@@ -187,7 +358,7 @@ class DINOv3Segmentation(nn.Module):
                     target_labels[:num_targets],
                 )
 
-                # Bounding box loss (L1 loss)
+                # Bounding box loss (GIoU loss)
                 target_boxes = targets[i].get("boxes", None)
                 if target_boxes is not None:
                     # Normalize ground truth boxes to [0, 1] range
@@ -200,7 +371,8 @@ class DINOv3Segmentation(nn.Module):
                         :, [1, 3]
                     ] /= 512.0  # Normalize y, h
 
-                    bbox_loss += F.l1_loss(
+                    # Use GIoU loss instead of L1
+                    bbox_loss += generalized_box_iou_loss(
                         pred_boxes[i, :num_targets], normalized_target_boxes
                     )
 
