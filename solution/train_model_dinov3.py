@@ -211,8 +211,18 @@ class DINOv3Segmentation(nn.Module):
                 # Bounding box loss (L1 loss)
                 target_boxes = targets[i].get("boxes", None)
                 if target_boxes is not None:
+                    # Normalize ground truth boxes to [0, 1] range
+                    # Assuming boxes are in pixel coordinates and images are 224x224
+                    normalized_target_boxes = target_boxes[:num_targets].clone()
+                    normalized_target_boxes[
+                        :, [0, 2]
+                    ] /= 224.0  # Normalize x, w
+                    normalized_target_boxes[
+                        :, [1, 3]
+                    ] /= 224.0  # Normalize y, h
+
                     bbox_loss += F.l1_loss(
-                        pred_boxes[i, :num_targets], target_boxes[:num_targets]
+                        pred_boxes[i, :num_targets], normalized_target_boxes
                     )
 
                 # Note: Dataset doesn't provide masks, so mask loss stays at 0
@@ -237,8 +247,15 @@ class DINOv3Segmentation(nn.Module):
 
         for i in range(batch_size):
             # Get predictions for this image
-            boxes = pred_boxes[i]  # (num_queries, 4)
+            boxes = pred_boxes[
+                i
+            ]  # (num_queries, 4) in normalized coordinates [0, 1]
             logits = pred_logits[i]  # (num_queries, num_classes)
+
+            # Denormalize boxes to pixel coordinates (224x224)
+            denormalized_boxes = boxes.clone()
+            denormalized_boxes[:, [0, 2]] *= 224.0  # Denormalize x, w
+            denormalized_boxes[:, [1, 3]] *= 224.0  # Denormalize y, h
 
             # Convert logits to scores and labels
             scores = F.softmax(logits, dim=-1)
@@ -258,7 +275,7 @@ class DINOv3Segmentation(nn.Module):
 
             results.append(
                 {
-                    "boxes": boxes[keep],
+                    "boxes": denormalized_boxes[keep],
                     "labels": labels[keep],
                     "scores": scores[keep],
                     "masks": masks,
