@@ -1,7 +1,12 @@
+import sys
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoConfig
+
+# Add ingestion_program to path to import tokam2d_utils
+sys.path.insert(0, str(Path(__file__).parent.parent / "ingestion_program"))
 from tokam2d_utils import TokamDataset
 
 
