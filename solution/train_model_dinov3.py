@@ -91,8 +91,20 @@ def augment_image_and_boxes(image, boxes, p=0.5):
         # Clip boxes to image boundaries
         boxes[:, 0] = torch.clamp(boxes[:, 0], 0, W - 1)
         boxes[:, 1] = torch.clamp(boxes[:, 1], 0, H - 1)
-        boxes[:, 2] = torch.clamp(boxes[:, 2], 1, W - boxes[:, 0])
-        boxes[:, 3] = torch.clamp(boxes[:, 3], 1, H - boxes[:, 1])
+        # Ensure width and height are positive and fit within image
+        boxes[:, 2] = torch.clamp(boxes[:, 2], 1, W)
+        boxes[:, 3] = torch.clamp(boxes[:, 3], 1, H)
+        # Make sure boxes don't extend beyond image boundaries
+        boxes[:, 2] = torch.minimum(
+            boxes[:, 2],
+            torch.tensor(W, dtype=boxes.dtype, device=boxes.device)
+            - boxes[:, 0],
+        )
+        boxes[:, 3] = torch.minimum(
+            boxes[:, 3],
+            torch.tensor(H, dtype=boxes.dtype, device=boxes.device)
+            - boxes[:, 1],
+        )
 
     # Random brightness adjustment
     if random.random() < p:
