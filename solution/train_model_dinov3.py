@@ -25,11 +25,11 @@ class DINOv3Segmentation(nn.Module):
         self,
         num_classes=2,
         pretrained=True,
-        model_name="facebook/dinov3-vits16-pretrain-lvd1689m",
+        model_name="facebook/dinov2-base",
     ):
         super().__init__()
 
-        # Load DINOv3 backbone
+        # Load DINOv2/v3 backbone
         if pretrained:
             self.backbone = AutoModel.from_pretrained(model_name)
             self.config = self.backbone.config
@@ -41,9 +41,9 @@ class DINOv3Segmentation(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # DINOv3 hidden dimensions (384 for vits, 768 for vitb)
+        # DINOv2/v3 hidden dimensions (384 for vits, 768 for base/vitb)
         self.hidden_dim = self.config.hidden_size
-        self.num_register_tokens = self.config.num_register_tokens
+        self.num_register_tokens = getattr(self.config, 'num_register_tokens', 0)
         self.patch_size = self.config.patch_size
 
         # Detection head (bounding boxes)
