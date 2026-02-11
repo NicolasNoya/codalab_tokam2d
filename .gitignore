@@ -6,3 +6,11 @@
 ingestion_res/*
 scoring_res/*
 .venv
+*.pt
+*.png
+*.csv
+*.mp4
+*.jpg
+*.txt
+*.yaml
+*.cache
