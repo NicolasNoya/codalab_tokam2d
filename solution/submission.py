@@ -201,8 +201,42 @@ def train_model(training_dir):
 
     print("\nTraining complete!")
 
-    # Load best model
-    best_model_path = OUTPUT_DIR / "detect" / "weights" / "best.pt"
+    # Load best model - check multiple possible paths
+    possible_paths = [
+        OUTPUT_DIR / "detect" / "weights" / "best.pt",
+        OUTPUT_DIR / "detect" / "train" / "weights" / "best.pt",
+        Path("runs") / "detect" / "weights" / "best.pt",
+        Path("runs") / "detect" / "train" / "weights" / "best.pt",
+    ]
+
+    best_model_path = None
+    for path in possible_paths:
+        if path.exists():
+            best_model_path = path
+            print(f"\nFound best model at: {best_model_path}")
+            break
+
+    if best_model_path is None:
+        # Try to find it by searching
+        import glob
+
+        search_patterns = [
+            str(OUTPUT_DIR / "**" / "best.pt"),
+            "runs/**/best.pt",
+        ]
+        for pattern in search_patterns:
+            matches = glob.glob(pattern, recursive=True)
+            if matches:
+                best_model_path = Path(matches[0])
+                print(f"\nFound best model at: {best_model_path}")
+                break
+
+    if best_model_path is None:
+        raise FileNotFoundError(
+            f"Could not find best.pt in expected locations. "
+            f"Checked: {[str(p) for p in possible_paths]}"
+        )
+
     yolo_model = YOLO(str(best_model_path))
     model = yolo_model.model.to("cpu").eval()
     return model
