@@ -201,53 +201,40 @@ def train_model(training_dir):
 
     print("\nTraining complete!")
 
-    # Load best model - check multiple possible paths
-    possible_paths = [
-        OUTPUT_DIR
-        / "detect"
-        / "runs"
-        / "detect"
-        / "weights"
-        / "best.pt",  # Nested path that YOLO creates
-        OUTPUT_DIR / "detect" / "weights" / "best.pt",
-        OUTPUT_DIR / "detect" / "train" / "weights" / "best.pt",
-        Path("runs")
-        / "detect"
-        / "runs"
-        / "detect"
-        / "weights"
-        / "best.pt",  # Nested path
-        Path("runs") / "detect" / "weights" / "best.pt",
-        Path("runs") / "detect" / "train" / "weights" / "best.pt",
-    ]
+    # Get the actual save directory from training results
+    # YOLO saves results and the trainer object contains the save directory
+    save_dir = None
+    if hasattr(model, "trainer") and hasattr(model.trainer, "save_dir"):
+        save_dir = Path(model.trainer.save_dir)
+        print(f"\nTraining saved to: {save_dir}")
 
-    best_model_path = None
-    for path in possible_paths:
-        if path.exists():
-            best_model_path = path
-            print(f"\nFound best model at: {best_model_path}")
-            break
-
-    if best_model_path is None:
-        # Try to find it by searching
+    # Try to find best.pt using the actual save directory first
+    if save_dir and (save_dir / "weights" / "best.pt").exists():
+        best_model_path = save_dir / "weights" / "best.pt"
+        print(f"Found best model at: {best_model_path}")
+    else:
+        # Fallback to searching for the file
         import glob
 
+        print("\nSearching for best.pt...")
         search_patterns = [
             str(OUTPUT_DIR / "**" / "best.pt"),
             "runs/**/best.pt",
         ]
+
+        best_model_path = None
         for pattern in search_patterns:
             matches = glob.glob(pattern, recursive=True)
             if matches:
                 best_model_path = Path(matches[0])
-                print(f"\nFound best model at: {best_model_path}")
+                print(f"Found best model at: {best_model_path}")
                 break
 
-    if best_model_path is None:
-        raise FileNotFoundError(
-            f"Could not find best.pt in expected locations. "
-            f"Checked: {[str(p) for p in possible_paths]}"
-        )
+        if best_model_path is None:
+            raise FileNotFoundError(
+                f"Could not find best.pt. Training save directory was: {save_dir}\n"
+                f"Please check the directory structure in: {OUTPUT_DIR}"
+            )
 
     yolo_model = YOLO(str(best_model_path))
     model = yolo_model.model.to("cpu").eval()
