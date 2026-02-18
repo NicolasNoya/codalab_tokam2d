@@ -203,8 +203,20 @@ def train_model(training_dir):
 
     # Load best model - check multiple possible paths
     possible_paths = [
+        OUTPUT_DIR
+        / "detect"
+        / "runs"
+        / "detect"
+        / "weights"
+        / "best.pt",  # Nested path that YOLO creates
         OUTPUT_DIR / "detect" / "weights" / "best.pt",
         OUTPUT_DIR / "detect" / "train" / "weights" / "best.pt",
+        Path("runs")
+        / "detect"
+        / "runs"
+        / "detect"
+        / "weights"
+        / "best.pt",  # Nested path
         Path("runs") / "detect" / "weights" / "best.pt",
         Path("runs") / "detect" / "train" / "weights" / "best.pt",
     ]
