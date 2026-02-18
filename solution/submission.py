@@ -52,6 +52,9 @@ def train_model(training_dir):
     YOLO_DATASET_DIR = Path("./yolo_training_data")
     OUTPUT_DIR = Path("./runs")
 
+    # Create output directory if it doesn't exist
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     print("Loading dataset...")
     dataset = TokamDataset(training_dir, include_unlabeled=False)
 
