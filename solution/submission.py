@@ -194,24 +194,20 @@ def train_model(training_dir):
             with open(label_path, "w") as f:
                 if target["boxes"] is not None:
                     for box in target["boxes"]:
-                        x, y, w, h = (
+                        # Boxes are in XYXY format (x1, y1, x2, y2)
+                        x1, y1, x2, y2 = (
                             box.cpu().numpy()
                             if hasattr(box, "cpu")
                             else box.numpy()
                         )
 
                         img_h, img_w = img_np.shape
-                        if x > 1 or y > 1:
-                            x, y, w, h = (
-                                x / img_w,
-                                y / img_h,
-                                w / img_w,
-                                h / img_h,
-                            )
 
-                        # Convert corner to center format
-                        x_center = x + w / 2
-                        y_center = y + h / 2
+                        # Convert XYXY pixel coords to YOLO center format
+                        x_center = (x1 + x2) / 2 / img_w
+                        y_center = (y1 + y2) / 2 / img_h
+                        w = (x2 - x1) / img_w
+                        h = (y2 - y1) / img_h
 
                         # Clamp to [0, 1]
                         x_center = np.clip(x_center, 0, 1)
