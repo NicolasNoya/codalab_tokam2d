@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 from discopat.metrics import compute_iomean
 
-EVAL_SETS = ["test", "private_test"]
-
+# EVAL_SETS = ["test", "private_test"]
+EVAL_SETS = ["train"]
 
 def match_gts_and_preds(
     groundtruths: list,
