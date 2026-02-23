@@ -5,7 +5,8 @@ from pathlib import Path
 
 import torch
 
-EVAL_SETS = ["test", "private_test"]
+# EVAL_SETS = ["test", "private_test"]
+EVAL_SETS = ["train"]
 
 
 def collate_fn(batch: torch.Tensor) -> torch.Tensor:
@@ -65,6 +66,7 @@ def main(data_dir, output_dir):
     for eval_set in EVAL_SETS:
         filepath = output_dir / f"{eval_set}_predictions.xml"
         dump_to_xml(res[eval_set], filepath)
+        print("File saved: ", filepath)
     print()
     print("Ingestion Program finished. Moving on to scoring")
 
