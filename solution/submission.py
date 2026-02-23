@@ -2,8 +2,78 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
+import torch
 
 from tokam2d_utils import TokamDataset
+
+
+class YOLOWrapper(torch.nn.Module):
+    """
+    Wrapper to make YOLO model compatible with ingestion program format.
+
+    The ingestion program expects:
+    - Input: tuple of images from collate_fn
+    - Output: list of dicts with "boxes" and "scores" keys
+    """
+
+    def __init__(self, yolo_model):
+        super().__init__()
+        self.yolo_model = yolo_model
+
+    def forward(self, images):
+        """
+        Args:
+            images: tuple of tensors (from collate_fn)
+
+        Returns:
+            list of dicts with "boxes" (Tensor[N, 4]) and "scores" (Tensor[N])
+        """
+        results = []
+
+        for img in images:
+            # Convert tensor to numpy for YOLO
+            # img is shape (1, H, W) - grayscale
+            img_np = (
+                img.squeeze().cpu().numpy()
+                if img.is_cuda
+                else img.squeeze().numpy()
+            )
+
+            # Normalize to 0-255
+            img_norm = (img_np - img_np.min()) / (
+                img_np.max() - img_np.min() + 1e-8
+            )
+            img_uint8 = (img_norm * 255).astype(np.uint8)
+
+            # Convert grayscale to RGB (YOLO expects 3 channels)
+            # Stack the grayscale image 3 times to create RGB
+            img_rgb = np.stack([img_uint8, img_uint8, img_uint8], axis=-1)
+
+            # Run YOLO prediction
+            pred = self.yolo_model(img_rgb, verbose=False)
+
+            # Extract boxes and scores
+            if len(pred) > 0 and len(pred[0].boxes) > 0:
+                boxes = pred[0].boxes.xyxy.cpu()  # [N, 4] in xyxy format
+                scores = pred[0].boxes.conf.cpu()  # [N]
+            else:
+                # No detections
+                boxes = torch.zeros((0, 4))
+                scores = torch.zeros((0,))
+
+            results.append({"boxes": boxes, "scores": scores})
+
+        return results
+
+    def eval(self):
+        """Set to evaluation mode."""
+        self.yolo_model.model.eval()
+        return self
+
+    def to(self, device):
+        """Move to device."""
+        # YOLO handles device internally
+        return self
 
 
 def train_model(training_dir):
@@ -27,13 +97,14 @@ def train_model(training_dir):
     # Configuration matching train_yolo_model.ipynb
     CONFIG = {
         "model": "yolov10l.pt",
-        "epochs": 500,
+        "epochs": 300,
         "batch_size": 4,
         "img_size": 1024,
         "patience": 300,
-        "val_split": 0.05,
+        "val_split": 0,
+        "val": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "workers": 4,
+        "workers": 0,
         "optimizer": "Adam",
         "lr0": 1e-4,
         "weight_decay": 0.0005,
@@ -48,12 +119,18 @@ def train_model(training_dir):
         "mosaic": 0.5,
     }
 
-    # Setup directories
-    YOLO_DATASET_DIR = Path("./yolo_training_data")
-    OUTPUT_DIR = Path("./runs")
+    # Setup directories using absolute paths to avoid issues in Docker
+    import os
+
+    cwd = Path(os.getcwd())
+    YOLO_DATASET_DIR = cwd / "yolo_training_data"
+    OUTPUT_DIR = cwd / "runs"
 
     # Create output directory if it doesn't exist
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"Current working directory: {cwd}")
+    print(f"Dataset directory: {YOLO_DATASET_DIR}")
 
     print("Loading dataset...")
     dataset = TokamDataset(training_dir, include_unlabeled=False)
@@ -67,14 +144,15 @@ def train_model(training_dir):
 
     print(f"Total labeled samples: {len(labeled_indices)}")
 
-    # Split dataset
+    # Use ALL data for training (no validation split)
     np.random.seed(42)
     np.random.shuffle(labeled_indices)
-    val_size = int(len(labeled_indices) * CONFIG["val_split"])
-    train_indices = labeled_indices[val_size:]
-    val_indices = labeled_indices[:val_size]
+    train_indices = labeled_indices  # Use all data for training
+    # Create minimal validation set (just 1 sample) to satisfy YOLO requirements
+    val_indices = [labeled_indices[0]]
 
-    print(f"Training: {len(train_indices)}, Validation: {len(val_indices)}")
+    print(f"Training: {len(train_indices)} samples (using all labeled data)")
+    print(f"Validation: {len(val_indices)} samples (minimal set for YOLO)")
 
     # Prepare YOLO format dataset
     def save_yolo_format(dataset, indices, split_name, output_dir):
@@ -98,9 +176,12 @@ def train_model(training_dir):
             )
             img_uint8 = (img_norm * 255).astype(np.uint8)
 
+            # Convert grayscale to RGB (YOLO expects 3 channels)
+            img_rgb = Image.fromarray(img_uint8).convert("RGB")
+
             # Save image
             img_name = f"{split_name}_{idx:06d}.jpg"
-            Image.fromarray(img_uint8).save(img_dir / img_name)
+            img_rgb.save(img_dir / img_name)
 
             # Save labels
             label_name = f"{split_name}_{idx:06d}.txt"
@@ -145,9 +226,25 @@ def train_model(training_dir):
     save_yolo_format(dataset, train_indices, "train", YOLO_DATASET_DIR)
     save_yolo_format(dataset, val_indices, "val", YOLO_DATASET_DIR)
 
+    # Verify dataset was created
+    train_img_count = len(
+        list((YOLO_DATASET_DIR / "images" / "train").glob("*.jpg"))
+    )
+    val_img_count = len(
+        list((YOLO_DATASET_DIR / "images" / "val").glob("*.jpg"))
+    )
+    print(f"\nDataset verification:")
+    print(f"  Train images: {train_img_count}")
+    print(f"  Val images: {val_img_count} (minimal set)")
+
+    if train_img_count == 0:
+        raise RuntimeError(
+            f"Dataset creation failed! Train images: {train_img_count}"
+        )
+
     # Create YAML configuration
     config_yaml = {
-        "path": str(YOLO_DATASET_DIR.absolute()),
+        "path": str(YOLO_DATASET_DIR),
         "train": "images/train",
         "val": "images/val",
         "nc": 1,
@@ -158,7 +255,9 @@ def train_model(training_dir):
     with open(yaml_path, "w") as f:
         yaml.dump(config_yaml, f)
 
-    print("Dataset preparation complete!")
+    print(f"Dataset preparation complete!")
+    print(f"Config file: {yaml_path}")
+    print(f"Dataset path in config: {config_yaml['path']}")
 
     # Train model
     print(f"\nInitializing {CONFIG['model']}...")
@@ -188,6 +287,7 @@ def train_model(training_dir):
         cos_lr=True,
         close_mosaic=10,
         amp=True,
+        val=CONFIG["val"],
         hsv_h=CONFIG["hsv_h"],
         hsv_s=CONFIG["hsv_s"],
         hsv_v=CONFIG["hsv_v"],
@@ -237,5 +337,10 @@ def train_model(training_dir):
             )
 
     yolo_model = YOLO(str(best_model_path))
-    model = yolo_model.model.to("cpu").eval()
-    return model
+
+    # Wrap YOLO model to match ingestion program's expected interface
+    wrapped_model = YOLOWrapper(yolo_model)
+    wrapped_model.eval()
+
+    print("\nModel wrapped and ready for evaluation")
+    return wrapped_model
