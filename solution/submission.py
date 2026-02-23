@@ -50,7 +50,7 @@ class YOLOWrapper(torch.nn.Module):
             img_rgb = np.stack([img_uint8, img_uint8, img_uint8], axis=-1)
 
             # Run YOLO prediction with low confidence threshold to not miss detections
-            pred = self.yolo_model(img_rgb, verbose=False, conf=0.01, iou=0.3)
+            pred = self.yolo_model(img_rgb, verbose=False, conf=0.25, iou=0.3)
 
             # Extract boxes and scores
             if len(pred) > 0 and len(pred[0].boxes) > 0:
@@ -101,7 +101,7 @@ def train_model(training_dir):
     # Configuration matching train_yolo_model.ipynb
     CONFIG = {
         "model": "yolov10l.pt",
-        "epochs": 10,
+        "epochs": 300,
         "batch_size": 4,
         "img_size": 1024,
         "patience": 300,
