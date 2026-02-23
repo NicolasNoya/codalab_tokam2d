@@ -49,17 +49,21 @@ class YOLOWrapper(torch.nn.Module):
             # Stack the grayscale image 3 times to create RGB
             img_rgb = np.stack([img_uint8, img_uint8, img_uint8], axis=-1)
 
-            # Run YOLO prediction
-            pred = self.yolo_model(img_rgb, verbose=False)
+            # Run YOLO prediction with low confidence threshold to not miss detections
+            pred = self.yolo_model(img_rgb, verbose=False, conf=0.01, iou=0.3)
 
             # Extract boxes and scores
             if len(pred) > 0 and len(pred[0].boxes) > 0:
                 boxes = pred[0].boxes.xyxy.cpu()  # [N, 4] in xyxy format
                 scores = pred[0].boxes.conf.cpu()  # [N]
+                print(
+                    f"  Detected {len(boxes)} blobs, scores: {scores.tolist()}"
+                )
             else:
                 # No detections
                 boxes = torch.zeros((0, 4))
                 scores = torch.zeros((0,))
+                print("  No detections")
 
             results.append({"boxes": boxes, "scores": scores})
 
