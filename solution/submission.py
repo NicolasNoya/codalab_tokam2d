@@ -97,7 +97,7 @@ def train_model(training_dir):
     # Configuration matching train_yolo_model.ipynb
     CONFIG = {
         "model": "yolov10l.pt",
-        "epochs": 300,
+        "epochs": 10,
         "batch_size": 4,
         "img_size": 1024,
         "patience": 300,
